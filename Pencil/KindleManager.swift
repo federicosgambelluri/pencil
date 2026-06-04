@@ -339,18 +339,48 @@ class KindleManager {
         //    Esempio: src="OEBPS/p000_cover.xhtml#cover" → src="OEBPS/p000_cover.xhtml"
         //    Questo risolve l'errore E24010 di kindlegen.
         if let enumerator = FileManager.default.enumerator(at: extractDir, includingPropertiesForKeys: nil) {
-            for case let file as URL in enumerator where file.pathExtension.lowercased() == "ncx" {
-                guard var ncx = try? String(contentsOf: file, encoding: .utf8) else { continue }
+            for case let file as URL in enumerator {
+                let ext = file.pathExtension.lowercased()
                 
-                // Regex: <content ... src="percorso#frammento" .../>
-                // Cattura tutto fino al # e rimuove #frammento
-                ncx = ncx.replacingOccurrences(
-                    of: "(<content\\b[^>]*\\bsrc=\"[^\"#]+)#[^\"]+\"",
-                    with: "$1\"",
-                    options: .regularExpression
-                )
-                try? ncx.write(to: file, atomically: true, encoding: .utf8)
-                print("✅ NCX corretto: \(file.lastPathComponent)")
+                if ext == "ncx" {
+                    guard var ncx = try? String(contentsOf: file, encoding: .utf8) else { continue }
+                    let originalNCX = ncx
+                    ncx = ncx.replacingOccurrences(
+                        of: "(<content\\b[^>]*\\bsrc=\"[^\"#]+)#[^\"]+\"",
+                        with: "$1\"",
+                        options: .regularExpression
+                    )
+                    if ncx != originalNCX {
+                        try? ncx.write(to: file, atomically: true, encoding: .utf8)
+                        print("✅ NCX corretto: \(file.lastPathComponent)")
+                    }
+                } else if ext == "html" || ext == "xhtml" || ext == "htm" {
+                    guard var html = try? String(contentsOf: file, encoding: .utf8) else { continue }
+                    var changed = false
+                    
+                    // Aggiungi dichiarazione XML se manca per xhtml
+                    if ext == "xhtml" && !html.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("<?xml") {
+                        html = "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n" + html
+                        changed = true
+                    }
+                    
+                    // Aggiungi meta charset se manca
+                    let lowerHtml = html.lowercased()
+                    if !lowerHtml.contains("charset=\"utf-8\"") && !lowerHtml.contains("charset=utf-8") && !lowerHtml.contains("encoding=\"utf-8\"") {
+                        if let headRange = html.range(of: "<head>", options: .caseInsensitive) {
+                            html.insert(contentsOf: "\n<meta charset=\"utf-8\"/>", at: headRange.upperBound)
+                            changed = true
+                        } else if let headRange = html.range(of: "<head[^>]*>", options: .regularExpression) {
+                            html.insert(contentsOf: "\n<meta charset=\"utf-8\"/>", at: headRange.upperBound)
+                            changed = true
+                        }
+                    }
+                    
+                    if changed {
+                        try? html.write(to: file, atomically: true, encoding: .utf8)
+                        print("✅ Encoding UTF-8 forzato in: \(file.lastPathComponent)")
+                    }
+                }
             }
         }
         
