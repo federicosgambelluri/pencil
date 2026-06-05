@@ -6,12 +6,14 @@ enum ReadingStatus: String, Codable, CaseIterable {
     case toRead   = "Da Leggere"
     case reading  = "In Lettura"
     case read     = "Letto"
+    case abandoned = "Abbandonato"
     
     var icon: String {
         switch self {
         case .toRead:  return "bookmark"
         case .reading: return "book.fill"
         case .read:    return "checkmark.circle.fill"
+        case .abandoned: return "xmark.octagon.fill"
         }
     }
     
@@ -20,6 +22,7 @@ enum ReadingStatus: String, Codable, CaseIterable {
         case .toRead:  return "blue"
         case .reading: return "orange"
         case .read:    return "green"
+        case .abandoned: return "red"
         }
     }
     
@@ -28,6 +31,7 @@ enum ReadingStatus: String, Codable, CaseIterable {
         case .toRead:  return ["#3B82F6", "#6366F1"]   // blue→indigo
         case .reading: return ["#F59E0B", "#EF4444"]   // amber→red
         case .read:    return ["#10B981", "#059669"]   // emerald
+        case .abandoned: return ["#EF4444", "#991B1B"] // red→dark red
         }
     }
 }
@@ -54,6 +58,7 @@ final class Book {
     // ─── Organizzazione ─────────────────────────────────────────────────
     var tags: [String]   = []
     var rating: Int      = 0               // 0…5 stelle
+    var plot: String     = ""              // Trama del libro
 
     // ─── Proprietà computate: stato lettura ─────────────────────────────
     var readingStatus: ReadingStatus {
@@ -78,7 +83,8 @@ final class Book {
          readingStatus: ReadingStatus = .toRead,
          readingProgress: Double = 0.0,
          tags: [String]         = [],
-         rating: Int            = 0) {
+         rating: Int            = 0,
+         plot: String           = "") {
         self.title            = title
         self.author           = author
         self.format           = format
@@ -91,5 +97,6 @@ final class Book {
         self.readingProgress  = readingProgress
         self.tags             = tags
         self.rating           = rating
+        self.plot             = plot
     }
 }
