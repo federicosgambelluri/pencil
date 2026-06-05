@@ -119,6 +119,11 @@ struct BookImporter {
             return nil
         }
         
+        // Pulizia finale per file Z-Library
+        let cleaned = cleanZLibraryTitle(title: title, currentAuthor: author)
+        title = cleaned.0
+        author = cleaned.1
+        
         let uniqueID = UUID().uuidString
         let newFileName = "\(uniqueID).\(format)"
         let destinationURL = getLibraryFolder().appendingPathComponent(newFileName)
@@ -130,6 +135,36 @@ struct BookImporter {
         } catch {
             return nil
         }
+    }
+    
+    static func cleanZLibraryTitle(title: String, currentAuthor: String) -> (String, String) {
+        var newTitle = title
+        var newAuthor = currentAuthor
+        
+        // Rimuove "(z-library.sk, 1lib.sk, z-lib.sk)" o simili
+        if let range = newTitle.range(of: "\\s*\\(z-library.*?\\)", options: .regularExpression) {
+            newTitle.removeSubrange(range)
+        }
+        if let range = newTitle.range(of: "\\s*\\(1lib.*?\\)", options: .regularExpression) {
+            newTitle.removeSubrange(range)
+        }
+        if let range = newTitle.range(of: "\\s*\\(z-lib.*?\\)", options: .regularExpression) {
+            newTitle.removeSubrange(range)
+        }
+        
+        // Estrae l'autore dalle parentesi finali es. "(Pif)"
+        if let match = newTitle.range(of: "\\s*\\(([^)]+)\\)$", options: .regularExpression) {
+            let extractedAuthor = String(newTitle[match]).trimmingCharacters(in: CharacterSet(charactersIn: " ()"))
+            newTitle.removeSubrange(match)
+            newAuthor = extractedAuthor
+        }
+        
+        // Rimuove la doppia ripetizione dell'autore tra parentesi quadre: "Ashlee Vance [Vance, Ashlee]"
+        if let bracketMatch = newAuthor.range(of: "\\s*\\[.*?\\]", options: .regularExpression) {
+            newAuthor.removeSubrange(bracketMatch)
+        }
+        
+        return (newTitle.trimmingCharacters(in: .whitespaces), newAuthor.trimmingCharacters(in: .whitespaces))
     }
     
     static func deleteFile(named fileName: String) {
@@ -184,6 +219,39 @@ struct BookImporter {
             print("Open Library fetch error: \(error)")
         }
         
+        return nil
+    }
+    
+    // MARK: - API iTunes per la trama
+    static func fetchPlotFromITunes(title: String, author: String) async -> String? {
+        let query = "\(title) \(author)"
+            .addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
+        let urlString = "https://itunes.apple.com/search?term=\(query)&media=ebook&country=IT"
+        
+        guard let url = URL(string: urlString) else { return nil }
+        
+        do {
+            let (data, response) = try await URLSession.shared.data(from: url)
+            if let httpResp = response as? HTTPURLResponse, httpResp.statusCode == 200 {
+                let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+                if let results = json?["results"] as? [[String: Any]],
+                   let firstItem = results.first,
+                   let description = firstItem["description"] as? String {
+                    
+                    // Rimuovi tag HTML e decodifica entità base
+                    let cleanString = description
+                        .replacingOccurrences(of: "<br\\s*/?>", with: "\n", options: .regularExpression)
+                        .replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
+                        .replacingOccurrences(of: "&quot;", with: "\"")
+                        .replacingOccurrences(of: "&#39;", with: "'")
+                        .replacingOccurrences(of: "&amp;", with: "&")
+                    
+                    return cleanString.trimmingCharacters(in: .whitespacesAndNewlines)
+                }
+            }
+        } catch {
+            print("Errore fetch plot da iTunes: \(error)")
+        }
         return nil
     }
     
@@ -335,5 +403,6 @@ struct BookImporter {
 // MARK: - Notification Name
 extension Notification.Name {
     static let goodreadsImportCompleted = Notification.Name("goodreadsImportCompleted")
+    static let fixZLibraryTitles = Notification.Name("fixZLibraryTitles")
 }
 
