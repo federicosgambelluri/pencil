@@ -381,8 +381,14 @@ struct BookImporter {
         let dest = backupDir.appendingPathComponent(name)
         
         do {
-            try FileManager.default.copyItem(at: storeURL, to: dest)
-            print("✅ Backup eseguito: \(name)")
+            for ext in ["sqlite", "sqlite-shm", "sqlite-wal"] {
+                let src = appSupport.appendingPathComponent("PencilApp/Library.\(ext)")
+                let dst = backupDir.appendingPathComponent("Library_\(formatter.string(from: Date())).\(ext)")
+                if FileManager.default.fileExists(atPath: src.path) {
+                    try FileManager.default.copyItem(at: src, to: dst)
+                }
+            }
+            print("✅ Backup eseguito")
             
             // Mantieni solo gli ultimi 10 backup
             let files = (try? FileManager.default.contentsOfDirectory(
@@ -396,6 +402,80 @@ struct BookImporter {
             for old in sorted.dropFirst(10) { try? FileManager.default.removeItem(at: old) }
         } catch {
             print("⚠️ Backup fallito: \(error)")
+        }
+    }
+    
+    // MARK: - Export/Import Completo Libreria
+    static func exportFullLibrary(to destFolder: URL) async -> Bool {
+        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        let dbBase = appSupport.appendingPathComponent("PencilApp")
+        let libFolder = getLibraryFolder()
+        
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd_HH-mm"
+        let backupDir = destFolder.appendingPathComponent("Pencil_Backup_\(formatter.string(from: Date()))")
+        
+        do {
+            try FileManager.default.createDirectory(at: backupDir, withIntermediateDirectories: true)
+            
+            let dbDest = backupDir.appendingPathComponent("Database")
+            try FileManager.default.createDirectory(at: dbDest, withIntermediateDirectories: true)
+            for ext in ["sqlite", "sqlite-shm", "sqlite-wal"] {
+                let file = dbBase.appendingPathComponent("Library.\(ext)")
+                if FileManager.default.fileExists(atPath: file.path) {
+                    try FileManager.default.copyItem(at: file, to: dbDest.appendingPathComponent("Library.\(ext)"))
+                }
+            }
+            
+            let filesDest = backupDir.appendingPathComponent("Files")
+            try FileManager.default.copyItem(at: libFolder, to: filesDest)
+            
+            return true
+        } catch {
+            print("Export error: \(error)")
+            return false
+        }
+    }
+    
+    static func importFullLibrary(from sourceFolder: URL) async -> Bool {
+        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        let dbBase = appSupport.appendingPathComponent("PencilApp")
+        let libFolder = getLibraryFolder()
+        
+        let dbSource = sourceFolder.appendingPathComponent("Database/Library.sqlite")
+        let filesSource = sourceFolder.appendingPathComponent("Files")
+        
+        guard FileManager.default.fileExists(atPath: dbSource.path) else { return false }
+        
+        do {
+            for ext in ["sqlite", "sqlite-shm", "sqlite-wal"] {
+                let file = dbBase.appendingPathComponent("Library.\(ext)")
+                if FileManager.default.fileExists(atPath: file.path) {
+                    try FileManager.default.removeItem(at: file)
+                }
+            }
+            for ext in ["sqlite", "sqlite-shm", "sqlite-wal"] {
+                let sourceFile = sourceFolder.appendingPathComponent("Database/Library.\(ext)")
+                if FileManager.default.fileExists(atPath: sourceFile.path) {
+                    try FileManager.default.copyItem(at: sourceFile, to: dbBase.appendingPathComponent("Library.\(ext)"))
+                }
+            }
+            
+            if FileManager.default.fileExists(atPath: filesSource.path) {
+                let items = try FileManager.default.contentsOfDirectory(at: filesSource, includingPropertiesForKeys: nil)
+                for item in items {
+                    let dest = libFolder.appendingPathComponent(item.lastPathComponent)
+                    if FileManager.default.fileExists(atPath: dest.path) {
+                        try FileManager.default.removeItem(at: dest)
+                    }
+                    try FileManager.default.copyItem(at: item, to: dest)
+                }
+            }
+            
+            return true
+        } catch {
+            print("Import error: \(error)")
+            return false
         }
     }
 }
