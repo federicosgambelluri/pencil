@@ -3,6 +3,19 @@ import SwiftUI
 import AppKit // Serve per NSSharingService (per le email)
 import SwiftData
 
+enum ConversionStatus: Equatable {
+    case waiting
+    case converting
+    case success
+    case failed(String)
+}
+
+struct ConversionJob: Identifiable {
+    let id = UUID()
+    let book: Book
+    var status: ConversionStatus
+}
+
 @Observable
 class KindleManager {
     var isConnected: Bool = false
@@ -10,6 +23,9 @@ class KindleManager {
     
     // Variabile per mostrare all'utente che l'app sta lavorando in background
     var isConverting: Bool = false
+    var conversionQueue: [ConversionJob] = []
+    var activeProcess: Process?
+    private var isProcessingQueue: Bool = false
     
     // --- 1. RILEVAMENTO USB E SCANSIONE ---
     func checkConnection(modelContext: ModelContext) {
@@ -90,10 +106,10 @@ class KindleManager {
             
             // 2. Se usa lo standard "Titolo - Autore", diamo priorità a quello
             if title.contains(" - ") {
-                let nameParts = title.components(separatedBy: " - ")
+                var nameParts = title.components(separatedBy: " - ")
                 if nameParts.count >= 2 {
-                    title = nameParts[0].trimmingCharacters(in: .whitespaces)
-                    author = nameParts[1].trimmingCharacters(in: .whitespaces)
+                    author = nameParts.removeLast().trimmingCharacters(in: .whitespaces)
+                    title = nameParts.joined(separator: " - ").trimmingCharacters(in: .whitespaces)
                 }
             } else {
                 // 3. Deducila dalla cartella, ignorando cartelle di sistema come Downloads o Items01
@@ -138,8 +154,8 @@ class KindleManager {
     }
     
     // --- 2. INVIO STANDARD VIA USB (Per i PDF) ---
-    func sendBook(_ book: Book) -> Bool {
-        guard isConnected, let kindleRoot = kindleURL, let fileName = book.fileName else { return false }
+    func sendBook(_ book: Book) -> String? {
+        guard isConnected, let kindleRoot = kindleURL, let fileName = book.fileName else { return nil }
         
         let sourceURL = BookImporter.getLibraryFolder().appendingPathComponent(fileName)
         let safeTitle = book.title.replacingOccurrences(of: "/", with: "-")
@@ -153,6 +169,7 @@ class KindleManager {
         }
         
         let destinationURL = authorFolder.appendingPathComponent("\(safeTitle) - \(safeAuthor).\(book.format)")
+        let kName = "\(safeAuthor)/\(destinationURL.lastPathComponent)"
         
         do {
             if FileManager.default.fileExists(atPath: destinationURL.path) {
@@ -160,10 +177,10 @@ class KindleManager {
             }
             try FileManager.default.copyItem(at: sourceURL, to: destinationURL)
             print("Libro inviato con successo al Kindle via USB!")
-            return true
+            return kName
         } catch {
             print("Errore durante l'invio al Kindle: \(error)")
-            return false
+            return nil
         }
     }
     
@@ -225,8 +242,13 @@ class KindleManager {
     }
 
     // --- 4. OPZIONE 2: CONVERSIONE E INVIO USB (Usando Kindle Previewer 3) ---
-    func convertAndSendToUSB(book: Book) async -> Bool {
-        guard isConnected, let kindleRoot = kindleURL, let fileName = book.fileName else { return false }
+    func convertAndSendToUSB(book: Book) async -> String? {
+        guard isConnected, let kindleRoot = kindleURL, let fileName = book.fileName else { return nil }
+        
+        // Se è già un PDF, Kindle lo supporta nativamente, evadiamo la conversione!
+        if book.format.lowercased() == "pdf" {
+            return sendBook(book)
+        }
         
         DispatchQueue.main.async { self.isConverting = true }
         
@@ -234,7 +256,7 @@ class KindleManager {
         guard FileManager.default.fileExists(atPath: kindlePreviewerCLI) else {
             print("❌ Kindle Previewer 3 non trovato")
             DispatchQueue.main.async { self.isConverting = false }
-            return false
+            return nil
         }
         
         let sourceURL  = BookImporter.getLibraryFolder().appendingPathComponent(fileName)
@@ -249,7 +271,7 @@ class KindleManager {
         
         // Esegui su thread in background per poter usare waitUntilExit()
         return await Task.detached(priority: .userInitiated) { [weak self] in
-            guard let self else { return false }
+            guard let self else { return nil }
             
             let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
             try? FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
@@ -259,7 +281,7 @@ class KindleManager {
             let sourceEPUB = tempDir.appendingPathComponent("source.epub")
             guard let _ = try? FileManager.default.copyItem(at: sourceURL, to: sourceEPUB) else {
                 DispatchQueue.main.async { self.isConverting = false }
-                return false
+                return nil
             }
             
             // Pre-processa: corregge il NCX (causa principale del E24010)
@@ -276,14 +298,33 @@ class KindleManager {
             process.standardError  = pipe
             process.arguments = [inputEPUB.path]
             
+            DispatchQueue.main.async { self.activeProcess = process }
+            
             do {
                 try process.run()
+                
+                // Timeout di 10 secondi
+                let timeoutTask = Task {
+                    try? await Task.sleep(nanoseconds: 10_000_000_000)
+                    if !Task.isCancelled && process.isRunning {
+                        process.terminate()
+                        print("⏳ Timeout conversione (10s): processo terminato.")
+                    }
+                }
+                
                 process.waitUntilExit()
+                timeoutTask.cancel()
+                
             } catch {
                 print("❌ Impossibile avviare kindlegen: \(error)")
-                DispatchQueue.main.async { self.isConverting = false }
-                return false
+                DispatchQueue.main.async {
+                    self.activeProcess = nil
+                    self.isConverting = false
+                }
+                return nil
             }
+            
+            DispatchQueue.main.async { self.activeProcess = nil }
             
             let output   = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
             let exitCode = process.terminationStatus
@@ -301,6 +342,9 @@ class KindleManager {
                     }
                     try FileManager.default.copyItem(at: outputMobi, to: destinationURL)
                     print("✅ Inviato al Kindle: \(destinationURL.lastPathComponent)")
+                    
+                    DispatchQueue.main.async { self.isConverting = false }
+                    return "\(safeAuthor)/\(destinationURL.lastPathComponent)"
                 } catch {
                     print("❌ Errore copia sul Kindle: \(error)")
                 }
@@ -309,7 +353,7 @@ class KindleManager {
             }
             
             DispatchQueue.main.async { self.isConverting = false }
-            return success
+            return nil
         }.value
     }
     
@@ -407,5 +451,66 @@ class KindleManager {
         
         print("⚠️ Ricompressione EPUB fallita, uso originale")
         return sourceURL
+    }
+    
+    // --- 5. CODA DI CONVERSIONE ---
+    func addToQueue(books: [Book], modelContext: ModelContext) {
+        for book in books {
+            // Evita di accodare se è già in coda e non è fallito
+            if !conversionQueue.contains(where: { $0.book == book && ($0.status == .waiting || $0.status == .converting) }) {
+                conversionQueue.append(ConversionJob(book: book, status: .waiting))
+            }
+        }
+        processQueue(modelContext: modelContext)
+    }
+    
+    func clearCompletedJobs() {
+        conversionQueue.removeAll { job in
+            if job.status == .success { return true }
+            if case .failed = job.status { return true }
+            return false
+        }
+    }
+    
+    func cancelJob(id: UUID) {
+        if let index = conversionQueue.firstIndex(where: { $0.id == id }) {
+            if conversionQueue[index].status == .converting {
+                activeProcess?.terminate()
+                activeProcess = nil
+            }
+            conversionQueue.remove(at: index)
+        }
+    }
+    
+    private func processQueue(modelContext: ModelContext) {
+        guard !isProcessingQueue else { return }
+        isProcessingQueue = true
+        
+        Task {
+            while let index = conversionQueue.firstIndex(where: { $0.status == .waiting }) {
+                let job = conversionQueue[index]
+                
+                await MainActor.run {
+                    conversionQueue[index].status = .converting
+                    self.isConverting = true
+                }
+                
+                let kName = await convertAndSendToUSB(book: job.book)
+                
+                await MainActor.run {
+                    if let kName = kName {
+                        conversionQueue[index].status = .success
+                        job.book.kindleFileName = kName
+                        self.scanKindleDocuments(modelContext: modelContext)
+                    } else {
+                        conversionQueue[index].status = .failed("Errore di conversione")
+                    }
+                }
+            }
+            await MainActor.run {
+                self.isConverting = false
+                self.isProcessingQueue = false
+            }
+        }
     }
 }
