@@ -32,6 +32,15 @@ struct SettingsView: View {
                     }
                     .pickerStyle(.radioGroup)
                 }
+                
+                Section("Manutenzione Libreria") {
+                    Button("Correggi Titoli Z-Library") {
+                        NotificationCenter.default.post(name: .fixZLibraryTitles, object: nil)
+                    }
+                    Text("Se hai importato libri da Z-Library con nomi strani nel titolo, questa funzione pulirà i titoli e sposterà l'autore nel campo corretto in tutta la libreria.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
             .padding()
             .tabItem {
@@ -236,9 +245,10 @@ struct LetturaInstructions: View {
             
             InstructionCard(icon: "book.pages", color: .blue, title: "Stato di Lettura") {
                 VStack(alignment: .leading, spacing: 4) {
-                    Label("Da Leggere — in lista d'attesa", systemImage: "book.closed").font(.caption)
-                    Label("In Lettura — attualmente aperto", systemImage: "book").font(.caption)
-                    Label("Letto — completato", systemImage: "checkmark.seal").font(.caption)
+                    Label("Da Leggere — in lista d'attesa", systemImage: "bookmark").font(.caption)
+                    Label("In Lettura — attualmente aperto", systemImage: "book.fill").font(.caption)
+                    Label("Letto — completato", systemImage: "checkmark.circle.fill").font(.caption)
+                    Label("Abbandonato — interrotto", systemImage: "xmark.octagon.fill").font(.caption)
                     Text("\nCambia lo stato dal pannello Info (clic destro → **Informazioni e Modifica…**) o direttamente dal menu contestuale → **Stato lettura**. Le date di inizio e fine vengono registrate automaticamente.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
@@ -251,6 +261,9 @@ struct LetturaInstructions: View {
             }
             InstructionCard(icon: "tag", color: .purple, title: "Tag Personalizzati") {
                 Text("Aggiungi **tag** liberi nel pannello Info (es. \"fantasy\", \"da rileggere\", \"regalo\"). I tag compaiono come chip colorati e puoi cercarli dalla barra di ricerca.")
+            }
+            InstructionCard(icon: "text.quote", color: .teal, title: "Trama del Libro") {
+                Text("Nel pannello Info è presente un'area per la **Trama**. Puoi scriverla tu oppure cliccare su **Cerca online** per farla scaricare automaticamente da Apple Books (iTunes).")
             }
             InstructionCard(icon: "chart.bar", color: .indigo, title: "Statistiche Libreria") {
                 Text("Clicca l'icona **📊** nella toolbar per vedere le statistiche: distribuzione degli stati di lettura, formati presenti, e i tuoi 5 libri con il rating più alto.")
