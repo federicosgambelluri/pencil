@@ -51,7 +51,7 @@ struct ContentView: View {
     // STATO PER DRAG & DROP POPOVER
     @State private var showKindleDropPopover: Bool = false
     @State private var kindleIconTargeted: Bool = false
-    @State private var draggedBook: Book? = nil
+    @State private var draggedBooks: [Book] = []
     
     // STATO PER INFO SHEET
     @State private var showInfoSheet: Bool = false
@@ -202,6 +202,25 @@ struct ContentView: View {
                 }
             }
         }
+        .onReceive(NotificationCenter.default.publisher(for: .fixZLibraryTitles)) { _ in
+            var fixedCount = 0
+            for book in books {
+                if book.modelContext != nil && !book.isDeleted {
+                    let cleaned = BookImporter.cleanZLibraryTitle(title: book.title, currentAuthor: book.author)
+                    if cleaned.0 != book.title || cleaned.1 != book.author {
+                        book.title = cleaned.0
+                        book.author = cleaned.1
+                        book.dateModified = Date()
+                        fixedCount += 1
+                    }
+                }
+            }
+            if fixedCount > 0 {
+                showToast(.success, title: "Titoli corretti", subtitle: "\(fixedCount) libri aggiornati")
+            } else {
+                showToast(.info, title: "Nessun titolo da correggere", subtitle: "Tutti i titoli sono a posto")
+            }
+        }
         .onAppear {
             Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { _ in
                 kindleManager.checkConnection(modelContext: modelContext)
@@ -238,6 +257,7 @@ struct ContentView: View {
         case .toRead:  return .blue
         case .reading: return .orange
         case .read:    return .green
+        case .abandoned: return .red
         }
     }
     
@@ -259,26 +279,32 @@ struct ContentView: View {
     enum DropMethod { case cloud, usb }
 
     
-    // Nuovo handler: usa draggedBook (salvato nel drag) invece di leggere la stringa
+    // Nuovo handler: usa draggedBooks
     private func handleKindleMethod(_ method: DropMethod) {
         showKindleDropPopover = false
-        guard let book = draggedBook else { return }
-        draggedBook = nil
+        let booksToSend = draggedBooks
+        draggedBooks = []
+        guard !booksToSend.isEmpty else { return }
         
         if method == .cloud {
-            kindleManager.sendViaEmail(book: book)
-            showToast(.success, title: "Inviato via Email", subtitle: "\(book.title) — controlla la tua mail")
+            for book in booksToSend {
+                kindleManager.sendViaEmail(book: book)
+            }
+            showToast(.success, title: "Inviati via Email", subtitle: "\(booksToSend.count) libri in elaborazione")
         } else if method == .usb {
             Task {
-                let success = await kindleManager.convertAndSendToUSB(book: book)
-                await MainActor.run {
-                    if success {
-                        kindleManager.scanKindleDocuments(modelContext: modelContext)
-                        showToast(.success, title: "Inviato via USB ✓", subtitle: "\(book.title) è sul Kindle")
-                    } else {
-                        showToast(.error, title: "Conversione fallita", subtitle: "\(book.title) — file EPUB corrotto?")
+                for (index, book) in booksToSend.enumerated() {
+                    await MainActor.run { showToast(.info, title: "Invio \(index+1)/\(booksToSend.count)", subtitle: book.title) }
+                    let success = await kindleManager.convertAndSendToUSB(book: book)
+                    await MainActor.run {
+                        if success {
+                            kindleManager.scanKindleDocuments(modelContext: modelContext)
+                        } else {
+                            showToast(.error, title: "Conversione fallita", subtitle: "\(book.title)")
+                        }
                     }
                 }
+                await MainActor.run { showToast(.success, title: "Completato", subtitle: "Tutti i libri elaborati") }
             }
         }
     }
@@ -306,9 +332,9 @@ struct ContentView: View {
             .padding(.vertical, 2)
             .help("Trascina un libro qui per inviarlo al Kindle")
             // Usa onDrop(of: .item) — accetta QUALSIASI drag senza leggere dati
-            // Il libro viene passato tramite la variabile draggedBook
+            // Il libro viene passato tramite la variabile draggedBooks
             .onDrop(of: [.item], isTargeted: $kindleIconTargeted) { _ in
-                if draggedBook != nil {
+                if !draggedBooks.isEmpty {
                     showKindleDropPopover = true
                 }
                 return true
@@ -505,7 +531,11 @@ struct ContentView: View {
                 }
                 .opacity((book.isKindleOnly && !kindleManager.isConnected) ? 0.5 : 1.0)
                 .onDrag {
-                    draggedBook = book
+                    if selectedBooks.contains(book) && selectedBooks.count > 1 {
+                        draggedBooks = Array(selectedBooks)
+                    } else {
+                        draggedBooks = [book]
+                    }
                     return makeItemProvider(for: book)
                 }
                 .tag(book)
@@ -546,7 +576,11 @@ struct ContentView: View {
                             .stroke(selectedBooks.contains(book) ? Color.blue : Color.clear, lineWidth: 4)
                     )
                     .onDrag {
-                        draggedBook = book
+                        if selectedBooks.contains(book) && selectedBooks.count > 1 {
+                            draggedBooks = Array(selectedBooks)
+                        } else {
+                            draggedBooks = [book]
+                        }
                         return makeItemProvider(for: book)
                     }
                     .contextMenu {
@@ -1172,6 +1206,7 @@ struct StatusBadge: View {
         case .toRead:  return .blue
         case .reading: return .orange
         case .read:    return .green
+        case .abandoned: return .red
         }
     }
 }
@@ -1330,6 +1365,26 @@ struct BookDetailView: View {
                                     .transition(.opacity)
                             }
                         }
+                    }
+                    
+                    // ── Trama ───────────────────────────────────────────────
+                    Section("Trama") {
+                        HStack {
+                            Button("Cerca online") {
+                                Task {
+                                    if let plot = await BookImporter.fetchPlotFromITunes(title: book.title, author: book.author) {
+                                        await MainActor.run {
+                                            book.plot = plot
+                                            book.dateModified = Date()
+                                        }
+                                    }
+                                }
+                            }
+                            .buttonStyle(.borderedProminent)
+                        }
+                        TextEditor(text: $book.plot)
+                            .frame(minHeight: 100)
+                            .onChange(of: book.plot) { book.dateModified = Date() }
                     }
                     
                     // ── Tag ───────────────────────────────────────────────
