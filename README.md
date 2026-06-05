@@ -1,6 +1,6 @@
 [README.md](https://github.com/user-attachments/files/28646698/README.md)
 <div align="center">
-  <img src="Pencil/Assets.xcassets/AppIcon.appiconset/mac1024.png" width="128" alt="Pencil Logo">
+  <img src="logo.png" width="128" alt="Pencil Logo">
   <h1>Pencil</h1>
   <p><b>La tua Libreria Kindle, Ripensata.</b></p>
   <p>Un manager nativo e bellissimo per macOS che semplifica e velocizza l'invio dei libri al tuo dispositivo, lasciando alle spalle la complessità dei software del passato.</p>
