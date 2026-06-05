@@ -41,6 +41,23 @@ struct SettingsView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
+                
+                Section("Backup e Trasferimento Mac") {
+                    HStack {
+                        Button("Esporta intera libreria") {
+                            exportLibrary()
+                        }
+                        .buttonStyle(.bordered)
+                        
+                        Button("Ripristina da cartella backup") {
+                            importLibrary()
+                        }
+                        .buttonStyle(.bordered)
+                    }
+                    Text("Esporta il database e tutti i file dei libri (EPUB/PDF) in una singola cartella (es. su iCloud Drive) per trasferirli su un altro Mac, e usa il tasto Ripristina per importarli.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
             .padding()
             .tabItem {
@@ -72,6 +89,70 @@ struct SettingsView: View {
             }
         }
         .frame(width: 560, height: 480)
+    }
+    
+    // MARK: - Funzioni di Backup Manuale
+    private func exportLibrary() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.canCreateDirectories = true
+        panel.prompt = "Esporta Qui"
+        panel.message = "Seleziona dove salvare la cartella di backup (es. iCloud Drive)"
+        
+        if panel.runModal() == .OK, let url = panel.url {
+            Task {
+                let success = await BookImporter.exportFullLibrary(to: url)
+                await MainActor.run {
+                    let alert = NSAlert()
+                    alert.messageText = success ? "Esportazione Completata" : "Errore durante l'esportazione"
+                    alert.informativeText = success ? "Tutti i tuoi libri e il database sono stati salvati." : "Verifica di avere spazio sufficiente o permessi corretti."
+                    alert.alertStyle = success ? .informational : .critical
+                    alert.runModal()
+                }
+            }
+        }
+    }
+    
+    private func importLibrary() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.canCreateDirectories = false
+        panel.prompt = "Ripristina"
+        panel.message = "Seleziona la cartella 'Pencil_Backup_...' precedentemente esportata"
+        
+        if panel.runModal() == .OK, let url = panel.url {
+            // Conferma distruttiva
+            let alert = NSAlert()
+            alert.messageText = "Attenzione: Sovrascrittura Libreria"
+            alert.informativeText = "Questa operazione eliminerà la libreria attuale e la sostituirà con quella del backup selezionato. L'app si chiuderà al termine dell'operazione per applicare le modifiche. Vuoi procedere?"
+            alert.alertStyle = .warning
+            alert.addButton(withTitle: "Ripristina e Chiudi")
+            alert.addButton(withTitle: "Annulla")
+            
+            if alert.runModal() == .alertFirstButtonReturn {
+                Task {
+                    let success = await BookImporter.importFullLibrary(from: url)
+                    await MainActor.run {
+                        if success {
+                            let successAlert = NSAlert()
+                            successAlert.messageText = "Ripristino Completato"
+                            successAlert.informativeText = "Il database e i file sono stati ripristinati. Pencil si chiuderà ora."
+                            successAlert.alertStyle = .informational
+                            successAlert.runModal()
+                            NSApplication.shared.terminate(nil)
+                        } else {
+                            let errorAlert = NSAlert()
+                            errorAlert.messageText = "Errore di Ripristino"
+                            errorAlert.informativeText = "La cartella selezionata non sembra essere un backup valido di Pencil, oppure si è verificato un errore di lettura."
+                            errorAlert.alertStyle = .critical
+                            errorAlert.runModal()
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
