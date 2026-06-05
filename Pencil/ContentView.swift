@@ -73,6 +73,9 @@ struct ContentView: View {
     @State private var showQuickLook: Bool = false
     @State private var quickLookBook: Book? = nil
     
+    @State private var hideKindleBooks: Bool = false
+    @State private var showConversionQueue: Bool = false
+    
     var sortedBooks: [Book] {
         let filtered = books.filter { book in
             guard book.modelContext != nil, !book.isDeleted else { return false }
@@ -82,6 +85,8 @@ struct ContentView: View {
             let isSync  = (fName != nil && kName != nil)
             let matchesSource = (librarySource == .mac) ? !isKOnly : (isKOnly || isSync)
             if !matchesSource { return false }
+            
+            if librarySource == .mac && hideKindleBooks && isSync { return false }
             
             // Filtro per stato di lettura
             if let filter = statusFilter, book.readingStatus != filter { return false }
@@ -172,7 +177,13 @@ struct ContentView: View {
             SpotlightManager.reindexAll(books: validBooks)
         }
         .background {
-            Button("Seleziona Tutto") { selectedBooks = Set(sortedBooks) }
+            Button("Seleziona Tutto") {
+                if selectedBooks.count == sortedBooks.count && !sortedBooks.isEmpty {
+                    selectedBooks.removeAll()
+                } else {
+                    selectedBooks = Set(sortedBooks)
+                }
+            }
                 .keyboardShortcut("a", modifiers: .command).opacity(0)
         }
         .fileImporter(isPresented: $isImportingFiles, allowedContentTypes: [.epub, .pdf], allowsMultipleSelection: true) { result in
@@ -292,20 +303,9 @@ struct ContentView: View {
             }
             showToast(.success, title: "Inviati via Email", subtitle: "\(booksToSend.count) libri in elaborazione")
         } else if method == .usb {
-            Task {
-                for (index, book) in booksToSend.enumerated() {
-                    await MainActor.run { showToast(.info, title: "Invio \(index+1)/\(booksToSend.count)", subtitle: book.title) }
-                    let success = await kindleManager.convertAndSendToUSB(book: book)
-                    await MainActor.run {
-                        if success {
-                            kindleManager.scanKindleDocuments(modelContext: modelContext)
-                        } else {
-                            showToast(.error, title: "Conversione fallita", subtitle: "\(book.title)")
-                        }
-                    }
-                }
-                await MainActor.run { showToast(.success, title: "Completato", subtitle: "Tutti i libri elaborati") }
-            }
+            kindleManager.addToQueue(books: booksToSend, modelContext: modelContext)
+            showConversionQueue = true
+            showToast(.info, title: "Inviati alla coda", subtitle: "\(booksToSend.count) libri in elaborazione")
         }
     }
 
@@ -313,23 +313,33 @@ struct ContentView: View {
     private var toolbarContent: some ToolbarContent {
         // 1. STATO KINDLE
         ToolbarItem(placement: .navigation) {
-            HStack(spacing: 8) {
-                Image(systemName: kindleManager.isConnected ? "ipad.and.arrow.forward" : "ipad")
-                    .foregroundColor(kindleIconTargeted ? .orange : (kindleManager.isConnected ? .green : .secondary))
-                    .scaleEffect(kindleIconTargeted ? 1.25 : 1.0)
-                    .animation(.spring(response: 0.3), value: kindleIconTargeted)
-                
-                if kindleManager.isConnected {
-                    if kindleManager.isConverting {
-                        ProgressView().controlSize(.small)
-                        Text("Conversione...").font(.caption).bold().foregroundColor(.orange)
-                    } else {
-                        Text("Kindle").font(.caption).bold().foregroundColor(.green)
+            Button {
+                if !kindleManager.conversionQueue.isEmpty {
+                    showConversionQueue.toggle()
+                }
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: kindleManager.isConnected ? "ipad.and.arrow.forward" : "ipad")
+                        .foregroundColor(kindleIconTargeted ? .orange : (kindleManager.isConnected ? .green : .secondary))
+                        .scaleEffect(kindleIconTargeted ? 1.25 : 1.0)
+                        .animation(.spring(response: 0.3), value: kindleIconTargeted)
+                    
+                    if kindleManager.isConnected {
+                        if kindleManager.isConverting {
+                            ProgressView().controlSize(.small)
+                            Text("Conversione...").font(.caption).bold().foregroundColor(.orange)
+                        } else {
+                            Text("Kindle").font(.caption).bold().foregroundColor(.green)
+                        }
                     }
                 }
             }
+            .buttonStyle(.plain)
             .padding(.horizontal, 4)
             .padding(.vertical, 2)
+            .popover(isPresented: $showConversionQueue, arrowEdge: .top) {
+                ConversionQueueView(kindleManager: kindleManager)
+            }
             .help("Trascina un libro qui per inviarlo al Kindle")
             // Usa onDrop(of: .item) — accetta QUALSIASI drag senza leggere dati
             // Il libro viene passato tramite la variabile draggedBooks
@@ -346,25 +356,54 @@ struct ContentView: View {
             }
         }
         
-        if kindleManager.isConnected && !kindleManager.isConverting {
+        if kindleManager.isConnected {
             // TASTO REFRESH
-            ToolbarItem(placement: .automatic) {
-                Button {
-                    kindleManager.scanKindleDocuments(modelContext: modelContext)
-                } label: {
-                    Image(systemName: "arrow.triangle.2.circlepath")
+            if !kindleManager.isConverting {
+                ToolbarItem(placement: .automatic) {
+                    Button {
+                        kindleManager.scanKindleDocuments(modelContext: modelContext)
+                    } label: {
+                        Image(systemName: "arrow.triangle.2.circlepath")
+                    }
+                    .help("Aggiorna Libreria Kindle")
                 }
-                .help("Aggiorna Libreria Kindle")
+                
+                // TASTO ESPULSIONE
+                ToolbarItem(placement: .automatic) {
+                    Button {
+                        kindleManager.ejectKindle()
+                    } label: {
+                        Image(systemName: "eject.fill")
+                    }
+                    .help("Espelli Kindle in sicurezza")
+                }
             }
             
-            // TASTO ESPULSIONE
-            ToolbarItem(placement: .automatic) {
-                Button {
-                    kindleManager.ejectKindle()
-                } label: {
-                    Image(systemName: "eject.fill")
+            // CODA DI CONVERSIONE (sempre visibile se c'è coda)
+            if !kindleManager.conversionQueue.isEmpty {
+                ToolbarItem(placement: .automatic) {
+                    Button {
+                        showConversionQueue.toggle()
+                    } label: {
+                        HStack(spacing: 4) {
+                            if kindleManager.isConverting {
+                                ProgressView().controlSize(.small)
+                            }
+                            Image(systemName: "list.bullet.rectangle.portrait")
+                        }
+                    }
+                    .help("Mostra coda di conversione")
                 }
-                .help("Espelli Kindle in sicurezza")
+            }
+        }
+        
+        if librarySource == .mac && kindleManager.isConnected {
+            ToolbarItem(placement: .automatic) {
+                Toggle(isOn: $hideKindleBooks) {
+                    Label("Nascondi libri sul Kindle", systemImage: hideKindleBooks ? "ipad.slash" : "ipad")
+                }
+                .toggleStyle(.button)
+                .help("Nascondi dalla libreria Mac i libri che sono già presenti sul Kindle")
             }
         }
         
@@ -964,14 +1003,10 @@ struct ContentView: View {
                         if !installed && !hideKindlePreviewerAlert {
                             await MainActor.run { showKindlePreviewerAlert = true }
                         } else {
-                            let ok = await kindleManager.convertAndSendToUSB(book: book)
                             await MainActor.run {
-                                if ok {
-                                    showToast(.success, title: "Inviato via USB ✓", subtitle: book.title)
-                                    kindleManager.scanKindleDocuments(modelContext: modelContext)
-                                } else {
-                                    showToast(.error, title: "Conversione fallita", subtitle: book.title)
-                                }
+                                kindleManager.addToQueue(books: [book], modelContext: modelContext)
+                                showConversionQueue = true
+                                showToast(.info, title: "Inviato alla coda", subtitle: book.title)
                             }
                         }
                     }
@@ -1588,6 +1623,95 @@ struct ToastView: View {
     }
 }
 
+// MARK: - CODA DI CONVERSIONE
+struct ConversionQueueView: View {
+    var kindleManager: KindleManager
+    
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text("Coda di Conversione")
+                    .font(.headline)
+                Spacer()
+                if !kindleManager.conversionQueue.isEmpty {
+                    Button("Pulisci completati") {
+                        kindleManager.clearCompletedJobs()
+                    }
+                    .buttonStyle(.plain)
+                    .font(.caption)
+                    .foregroundColor(.blue)
+                }
+            }
+            .padding()
+            .background(.bar)
+            
+            if kindleManager.conversionQueue.isEmpty {
+                VStack(spacing: 10) {
+                    Image(systemName: "checklist")
+                        .font(.largeTitle)
+                        .foregroundColor(.secondary)
+                    Text("Nessuna conversione in coda")
+                        .foregroundColor(.secondary)
+                }
+                .padding(.vertical, 40)
+                .frame(maxWidth: .infinity)
+            } else {
+                List {
+                    ForEach(kindleManager.conversionQueue) { job in
+                        HStack(spacing: 12) {
+                            Group {
+                                switch job.status {
+                                case .waiting:
+                                    Image(systemName: "clock")
+                                        .foregroundColor(.secondary)
+                                case .converting:
+                                    ProgressView().controlSize(.small)
+                                case .success:
+                                    Image(systemName: "checkmark.circle.fill")
+                                        .foregroundColor(.green)
+                                case .failed(_):
+                                    Image(systemName: "xmark.circle.fill")
+                                        .foregroundColor(.red)
+                                }
+                            }
+                            
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(job.book.title)
+                                    .font(.system(size: 13, weight: .medium))
+                                    .lineLimit(1)
+                                if case .failed(let err) = job.status {
+                                    Text(err)
+                                        .font(.system(size: 11))
+                                        .foregroundColor(.red)
+                                } else {
+                                    Text(job.book.author)
+                                        .font(.system(size: 11))
+                                        .foregroundColor(.secondary)
+                                        .lineLimit(1)
+                                }
+                            }
+                            Spacer()
+                            
+                            // Bottone per annullare/rimuovere
+                            Button {
+                                kindleManager.cancelJob(id: job.id)
+                            } label: {
+                                Image(systemName: "xmark.circle.fill")
+                                    .foregroundColor(.secondary)
+                            }
+                            .buttonStyle(.plain)
+                            .help("Rimuovi dalla coda")
+                        }
+                        .padding(.vertical, 2)
+                    }
+                }
+                .listStyle(.inset)
+                .frame(minHeight: 300, maxHeight: 600)
+            }
+        }
+        .frame(width: 380)
+    }
+}
 
 #Preview {
     ContentView()
