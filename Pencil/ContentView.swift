@@ -48,7 +48,14 @@ struct ContentView: View {
     @State private var showConversionErrorAlert = false
     @State private var showConversionSuccessAlert = false
     
-    // STATO PER DRAG & DROP POPOVER
+    @State private var showConversionQueue = false
+    @State private var hoveredKindleButton = false
+    
+    // Linking state
+    @State private var bookToLink: Book? = nil
+    @State private var showLinkSheet = false
+    
+    // Per il file importer/exporterDRAG & DROP POPOVER
     @State private var showKindleDropPopover: Bool = false
     @State private var kindleIconTargeted: Bool = false
     @State private var draggedBooks: [Book] = []
@@ -74,7 +81,6 @@ struct ContentView: View {
     @State private var quickLookBook: Book? = nil
     
     @State private var hideKindleBooks: Bool = false
-    @State private var showConversionQueue: Bool = false
     
     var sortedBooks: [Book] {
         let filtered = books.filter { book in
@@ -237,6 +243,50 @@ struct ContentView: View {
                 kindleManager.checkConnection(modelContext: modelContext)
             }
         }
+        // Manual Link Sheet
+        .sheet(isPresented: $showLinkSheet) {
+            if let kindleBook = bookToLink {
+                NavigationStack {
+                    List {
+                        ForEach(books.filter { $0.fileName != nil && $0.kindleFileName == nil && $0.modelContext != nil && !$0.isDeleted }) { localBook in
+                            Button {
+                                // Eseguiamo l'associazione
+                                localBook.kindleFileName = kindleBook.kindleFileName
+                                if let ctx = kindleBook.modelContext {
+                                    ctx.delete(kindleBook) // Eliminiamo il finto libro del kindle
+                                }
+                                showToast(.success, title: "Libro Associato", subtitle: "I metadati sono stati uniti")
+                                showLinkSheet = false
+                                bookToLink = nil
+                            } label: {
+                                HStack {
+                                    VStack(alignment: .leading) {
+                                        Text(localBook.title).font(.headline)
+                                        Text(localBook.author).font(.subheadline).foregroundStyle(.secondary)
+                                    }
+                                    Spacer()
+                                    if let format = localBook.format.uppercased() as String? {
+                                        Text(format).font(.caption.bold()).padding(4).background(Color.secondary.opacity(0.2)).cornerRadius(4)
+                                    }
+                                }
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .navigationTitle("Seleziona libro corrispondente")
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("Annulla") {
+                                showLinkSheet = false
+                                bookToLink = nil
+                            }
+                        }
+                    }
+                }
+                .frame(minWidth: 400, minHeight: 400)
+            }
+        }
+        .frame(minWidth: 800, minHeight: 500)
     }
     
     // MARK: - Barra filtro stato lettura
@@ -1017,6 +1067,13 @@ struct ContentView: View {
         }
         
         if book.isKindleOnly && kindleManager.isConnected {
+            Button {
+                bookToLink = book
+                showLinkSheet = true
+            } label: {
+                Label("Associa a libro in libreria...", systemImage: "link")
+            }
+            
             Button {
                 let ok = kindleManager.importFromKindle(book: book)
                 showToast(ok ? .success : .error,
