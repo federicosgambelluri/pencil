@@ -133,9 +133,33 @@ class KindleManager {
                     matchedBook.kindleFileName = kName
                 }
             } else {
-                // Libro nuovo trovato SOLO sul Kindle
-                let newBook = Book(title: title, author: author, format: ext, fileName: nil, kindleFileName: kName)
-                modelContext.insert(newBook)
+                // FALLBACK: Se non c'è match e il nome è "sospetto" (es. UUID generato dall'invio via email di Amazon),
+                // proviamo a ispezionare il contenuto binario del file per cercare il titolo di uno dei nostri libri.
+                let isSuspicious = title.range(of: "^[0-9A-F\\-]{10,}$", options: [.regularExpression, .caseInsensitive]) != nil ||
+                                   title.range(of: "^B0[A-Z0-9]{8}$", options: [.regularExpression, .caseInsensitive]) != nil
+                
+                var foundByContent = false
+                if isSuspicious {
+                    // Mappiamo il file in memoria (veloce, non riempie la RAM)
+                    if let fileData = try? Data(contentsOf: file, options: .alwaysMapped) {
+                        for book in existingBooks where book.kindleFileName == nil {
+                            // Per evitare falsi positivi, verifichiamo solo titoli di almeno 4 caratteri
+                            if let titleData = book.title.data(using: .utf8), titleData.count > 3 {
+                                if fileData.range(of: titleData, options: [], in: 0..<fileData.count) != nil {
+                                    book.kindleFileName = kName
+                                    foundByContent = true
+                                    break
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                if !foundByContent {
+                    // Libro nuovo trovato SOLO sul Kindle
+                    let newBook = Book(title: title, author: author, format: ext, fileName: nil, kindleFileName: kName)
+                    modelContext.insert(newBook)
+                }
             }
         }
         
@@ -303,12 +327,12 @@ class KindleManager {
             do {
                 try process.run()
                 
-                // Timeout di 10 secondi
+                // Timeout di 90 secondi (alcuni libri impiegano più tempo per essere compressi)
                 let timeoutTask = Task {
-                    try? await Task.sleep(nanoseconds: 10_000_000_000)
+                    try? await Task.sleep(nanoseconds: 90_000_000_000)
                     if !Task.isCancelled && process.isRunning {
                         process.terminate()
-                        print("⏳ Timeout conversione (10s): processo terminato.")
+                        print("⏳ Timeout conversione (90s): processo terminato.")
                     }
                 }
                 
